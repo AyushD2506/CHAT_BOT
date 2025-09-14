@@ -20,7 +20,7 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferWindowMemory
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from models import ChatSession, ChatMessage, Document as DocModel
+from models import ChatSession, ChatMessage, Document as DocModel, MCPTool
 
 class RAGService:
     def __init__(self):
@@ -269,13 +269,338 @@ class RAGService:
         response = self.llm.invoke(prompt)
         return response.content
     
+    async def _maybe_execute_mcp_tool(self, query: str, session_id: str, db: AsyncSession) -> str | None:
+        """Detect and execute a session MCP tool if the user asks for it.
+        Heuristics:
+        - If message contains `run <tool_name>` or mentions exact tool name, execute it.
+        - Optional payload: `run <tool_name> with {json}` → used as params/body or kwargs.
+        - API tools: HTTP call with basic timeout; Function tools: exec and call.
+        """
+        # Load tools for session
+        result = await db.execute(select(MCPTool).where(MCPTool.session_id == session_id))
+        tools = result.scalars().all()
+        if not tools:
+            return None
+
+        lowered = query.lower()
+        chosen = None
+        for t in tools:
+            if f"run {t.name.lower()}" in lowered or t.name.lower() in lowered:
+                chosen = t
+                break
+        if not chosen:
+            return None
+
+        # Try to extract optional JSON payload after "with"
+        payload = None
+        try:
+            import re, json
+            m = re.search(r"with\s*(\{[\s\S]*\}|\[[\s\S]*\])", query, re.IGNORECASE)
+            if m:
+                payload = json.loads(m.group(1))
+        except Exception:
+            payload = None
+
+        try:
+            if chosen.tool_type == 'api' and chosen.api_url:
+                method = (chosen.http_method or 'GET').upper()
+                url = chosen.api_url
+                headers = {"Accept": "application/json, text/plain;q=0.9"}
+                body_bytes = None
+
+                # Build query/body
+                if method == 'GET':
+                    # Append query params if payload is dict
+                    if isinstance(payload, dict):
+                        from urllib.parse import urlencode, urlsplit, urlunsplit
+                        parts = list(urlsplit(url))
+                        query = parts[3]
+                        extra = urlencode(payload, doseq=True)
+                        parts[3] = (query + '&' if query else '') + extra
+                        url = urlunsplit(parts)
+                else:
+                    headers["Content-Type"] = "application/json"
+                    if payload is not None:
+                        import json as _json
+                        body_bytes = _json.dumps(payload).encode('utf-8')
+
+                print(f"[MCP][EXECUTE] session={session_id} tool={chosen.name} type=api method={method} url={url} payload={payload}")
+
+                # Try requests first; fallback to urllib to avoid dependency issues
+                text = ""
+                status_code = 0
+                try:
+                    import requests  # type: ignore
+                    resp = requests.request(method, url, headers=headers, data=body_bytes, timeout=15)
+                    text = resp.text
+                    status_code = resp.status_code
+                except Exception:
+                    # Fallback
+                    from urllib.request import Request, urlopen
+                    req = Request(url=url, data=body_bytes, headers=headers, method=(method if method in ("GET","POST","PUT","DELETE","PATCH") else "GET"))
+                    with urlopen(req, timeout=15) as r:  # nosec - demo only
+                        status_code = getattr(r, 'status', 200)
+                        text = r.read().decode('utf-8', errors='replace')
+
+                print(f"[MCP][RESULT] session={session_id} tool={chosen.name} status={status_code} bytes={len(text)}")
+
+                preview = text[:2000]
+                meta = []
+                if chosen.description:
+                    meta.append(f"Description: {chosen.description}")
+                if chosen.params_docstring:
+                    meta.append(f"Params: {chosen.params_docstring}")
+                if chosen.returns_docstring:
+                    meta.append(f"Returns: {chosen.returns_docstring}")
+                meta_block = ("\n" + "\n".join(meta)) if meta else ""
+                return f"[MCP API '{chosen.name}' executed] Status {status_code}{meta_block}\nResponse preview:\n{preview}"
+
+            elif chosen.tool_type == 'python_function' and chosen.function_code:
+                import inspect
+                local_env = {}
+                exec(chosen.function_code, {}, local_env)
+                # Find a callable defined in code (first def)
+                func = None
+                for k, v in local_env.items():
+                    if callable(v):
+                        func = v
+                        break
+                if func is None:
+                    return "MCP function code did not define a callable."
+
+                print(f"[MCP][EXECUTE] session={session_id} tool={chosen.name} type=python_function payload={payload}")
+
+                # Try to call with kwargs if payload is dict
+                result_value = None
+                try:
+                    if isinstance(payload, dict):
+                        sig = inspect.signature(func)
+                        # Filter kwargs to function parameters
+                        filtered = {k: v for k, v in payload.items() if k in sig.parameters}
+                        result_value = func(**filtered)
+                    else:
+                        result_value = func()
+                except TypeError:
+                    # Fallback: call without args
+                    result_value = func()
+
+                print(f"[MCP][RESULT] session={session_id} tool={chosen.name} return_type={type(result_value).__name__}")
+
+                meta = []
+                if chosen.description:
+                    meta.append(f"Description: {chosen.description}")
+                if chosen.params_docstring:
+                    meta.append(f"Params: {chosen.params_docstring}")
+                if chosen.returns_docstring:
+                    meta.append(f"Returns: {chosen.returns_docstring}")
+                meta_block = ("\n" + "\n".join(meta)) if meta else ""
+                return f"[MCP Function '{chosen.name}' executed]{meta_block}\nReturn: {result_value}"
+            else:
+                return "MCP tool is misconfigured."
+        except Exception as e:
+            return f"Error while executing MCP tool '{chosen.name}': {e}"
+
+    async def _auto_route_mcp_tool(self, query: str, session_id: str, db: AsyncSession) -> str | None:
+        """LLM-driven tool selection and execution based on tool metadata and user query.
+        Returns a string result if a tool is executed; otherwise None.
+        """
+        # Load tools for session
+        result = await db.execute(select(MCPTool).where(MCPTool.session_id == session_id))
+        tools = result.scalars().all()
+        if not tools:
+            return None
+
+        # Build tool catalog text for the model
+        catalog_lines = []
+        for t in tools:
+            if t.tool_type == 'api':
+                extra = f"method={t.http_method or 'GET'} url={t.api_url}"
+            else:
+                extra = "python_function"
+            catalog_lines.append(
+                f"- name: {t.name}\n  type: {t.tool_type}\n  extra: {extra}\n  description: {t.description or ''}\n  params: {t.params_docstring or ''}\n"
+            )
+        catalog = "\n".join(catalog_lines)
+
+        # Ask LLM to decide
+        decision_prompt = f"""
+You are a smart routing controller. Decide if any of the following tools should be used to answer the user's query. 
+Return ONLY a compact JSON object with keys: use_tool (bool), tool_name (string|null), args (object|null), reason (string).
+Tools:\n{catalog}\n
+User query: {query}
+Provide JSON only, no extra text.
+"""
+        try:
+            decision = self.llm.invoke(decision_prompt)
+            content = getattr(decision, 'content', str(decision))
+        except Exception as e:
+            print(f"[MCP][ROUTER][ERROR] session={session_id} decision LLM error: {e}")
+            return None
+
+        # Parse JSON
+        import re, json
+        data = None
+        try:
+            m = re.search(r"\{[\s\S]*\}", content)
+            if m:
+                data = json.loads(m.group(0))
+        except Exception as e:
+            print(f"[MCP][ROUTER][ERROR] session={session_id} parse error: {e}; content={content!r}")
+            return None
+
+        if not data or not data.get('use_tool'):
+            return None
+
+        tool_name = (data.get('tool_name') or '').strip()
+        args = data.get('args') if isinstance(data.get('args'), dict) else None
+        chosen = next((t for t in tools if t.name.lower() == tool_name.lower()), None)
+        if not chosen:
+            print(f"[MCP][ROUTER] session={session_id} suggested tool not found: {tool_name}")
+            return None
+
+        # Execute selected tool (similar to heuristic path)
+        try:
+            if chosen.tool_type == 'api' and chosen.api_url:
+                method = (chosen.http_method or 'GET').upper()
+                url = chosen.api_url
+                headers = {"Accept": "application/json, text/plain;q=0.9"}
+                body_bytes = None
+
+                if method == 'GET':
+                    if isinstance(args, dict):
+                        from urllib.parse import urlencode, urlsplit, urlunsplit
+                        parts = list(urlsplit(url))
+                        q = parts[3]
+                        extra = urlencode(args, doseq=True)
+                        parts[3] = (q + '&' if q else '') + extra
+                        url = urlunsplit(parts)
+                else:
+                    headers["Content-Type"] = "application/json"
+                    if args is not None:
+                        import json as _json
+                        body_bytes = _json.dumps(args).encode('utf-8')
+
+                print(f"[MCP][EXECUTE] session={session_id} tool={chosen.name} type=api method={method} url={url} args={args}")
+
+                text = ""
+                status_code = 0
+                try:
+                    import requests  # type: ignore
+                    resp = requests.request(method, url, headers=headers, data=body_bytes, timeout=15)
+                    text = resp.text
+                    status_code = resp.status_code
+                except Exception:
+                    from urllib.request import Request, urlopen
+                    req = Request(url=url, data=body_bytes, headers=headers, method=(method if method in ("GET","POST","PUT","DELETE","PATCH") else "GET"))
+                    with urlopen(req, timeout=15) as r:  # nosec - demo only
+                        status_code = getattr(r, 'status', 200)
+                        text = r.read().decode('utf-8', errors='replace')
+
+                print(f"[MCP][RESULT] session={session_id} tool={chosen.name} status={status_code} bytes={len(text)}")
+
+                preview = text[:2000]
+                meta = []
+                if chosen.description:
+                    meta.append(f"Description: {chosen.description}")
+                if chosen.params_docstring:
+                    meta.append(f"Params: {chosen.params_docstring}")
+                if chosen.returns_docstring:
+                    meta.append(f"Returns: {chosen.returns_docstring}")
+                meta_block = ("\n" + "\n".join(meta)) if meta else ""
+                return f"[MCP API '{chosen.name}' executed] Status {status_code}{meta_block}\nResponse preview:\n{preview}"
+
+            elif chosen.tool_type == 'python_function' and chosen.function_code:
+                import inspect
+                local_env = {}
+                exec(chosen.function_code, {}, local_env)
+                func = None
+                for k, v in local_env.items():
+                    if callable(v):
+                        func = v
+                        break
+                if func is None:
+                    return "MCP function code did not define a callable."
+
+                print(f"[MCP][EXECUTE] session={session_id} tool={chosen.name} type=python_function args={args}")
+
+                result_value = None
+                try:
+                    if isinstance(args, dict):
+                        sig = inspect.signature(func)
+                        filtered = {k: v for k, v in args.items() if k in sig.parameters}
+                        result_value = func(**filtered)
+                    else:
+                        result_value = func()
+                except TypeError:
+                    result_value = func()
+
+                print(f"[MCP][RESULT] session={session_id} tool={chosen.name} return_type={type(result_value).__name__}")
+
+                meta = []
+                if chosen.description:
+                    meta.append(f"Description: {chosen.description}")
+                if chosen.params_docstring:
+                    meta.append(f"Params: {chosen.params_docstring}")
+                if chosen.returns_docstring:
+                    meta.append(f"Returns: {chosen.returns_docstring}")
+                meta_block = ("\n" + "\n".join(meta)) if meta else ""
+                return f"[MCP Function '{chosen.name}' executed]{meta_block}\nReturn: {result_value}"
+            else:
+                return "MCP tool is misconfigured."
+        except Exception as e:
+            print(f"[MCP][ERROR] session={session_id} tool_exec_failed: {e}")
+            return None
+
     async def chat_with_memory(self, query: str, session_id: str, db: AsyncSession, strategy: str = "contextual", **kwargs) -> str:
-        """Main chat function with memory support"""
+        """Main chat function with memory support + automatic MCP tool routing"""
+        # 1) Explicit tool invocation (heuristics still respected)
+        mcp_response = await self._maybe_execute_mcp_tool(query, session_id, db)
+        if mcp_response is not None:
+            # Summarize tool output via LLM to produce a clean user-facing answer
+            try:
+                prompt = f"""
+Summarize the following tool output to directly answer the user's question.
+
+User question:
+{query}
+
+Tool output:
+{mcp_response}
+
+Provide a concise, user-friendly answer. If the tool output is an error, explain it briefly and suggest next steps.
+"""
+                _sum = self.llm.invoke(prompt)
+                return getattr(_sum, "content", str(_sum))
+            except Exception:
+                return mcp_response
+
+        # 2) Automatic tool routing
+        auto_response = await self._auto_route_mcp_tool(query, session_id, db)
+        if auto_response is not None:
+            # Summarize auto tool output via LLM
+            try:
+                prompt = f"""
+Summarize the following tool output to directly answer the user's question.
+
+User question:
+{query}
+
+Tool output:
+{auto_response}
+
+Provide a concise, user-friendly answer. If the tool output is an error, explain it briefly and suggest next steps.
+"""
+                _sum = self.llm.invoke(prompt)
+                return getattr(_sum, "content", str(_sum))
+            except Exception:
+                return auto_response
+
+        # 3) Fall back to selected RAG strategy
         if strategy == "naive":
             return await self.naive_rag(query, session_id, k=kwargs.get('k', 5))
         elif strategy == "chunking":
             return await self.chunking_rag(
-                query, session_id, 
+                query, session_id,
                 chunk_size=kwargs.get('chunk_size', 1000),
                 chunk_overlap=kwargs.get('chunk_overlap', 200),
                 k=kwargs.get('k', 5)

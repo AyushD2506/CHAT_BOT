@@ -121,10 +121,67 @@ export const api = {
       await apiClient.delete(`/admin/documents/${documentId}`);
     },
 
+    getDocumentFileBlob: async (documentId: string): Promise<Blob> => {
+      const response = await fetch(`${API_BASE_URL}/admin/documents/${documentId}/file`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token') || ''}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch document file');
+      }
+      return await response.blob();
+    },
+
     // Analytics
     getAnalytics: async (): Promise<Analytics> => {
       const response = await apiClient.get('/admin/analytics');
       return response.data;
+    },
+
+    // MCP Tools
+    createMcpTool: async (
+      sessionId: string,
+      payload: {
+        name: string;
+        tool_type: 'api' | 'python_function';
+        api_url?: string;
+        http_method?: string;
+        function_code?: string;
+        description?: string;
+        params_docstring?: string;
+        returns_docstring?: string;
+      }
+    ) => {
+      const response = await apiClient.post(`/admin/sessions/${sessionId}/mcp/tools`, payload);
+      return response.data;
+    },
+
+    listMcpTools: async (sessionId: string) => {
+      const response = await apiClient.get(`/admin/sessions/${sessionId}/mcp/tools`);
+      return response.data;
+    },
+
+    updateMcpTool: async (
+      toolId: string,
+      payload: Partial<{
+        name: string;
+        tool_type: 'api' | 'python_function';
+        api_url: string;
+        http_method: string;
+        function_code: string;
+        description: string;
+        params_docstring: string;
+        returns_docstring: string;
+      }>
+    ) => {
+      const response = await apiClient.put(`/admin/mcp/tools/${toolId}`, payload);
+      return response.data;
+    },
+
+    deleteMcpTool: async (toolId: string) => {
+      await apiClient.delete(`/admin/mcp/tools/${toolId}`);
     },
   },
 
@@ -132,6 +189,20 @@ export const api = {
   chat: {
     listUserSessions: async (): Promise<ChatSession[]> => {
       const response = await apiClient.get('/chat/sessions');
+      return response.data;
+    },
+
+    // Threads
+    listThreads: async (sessionId: string) => {
+      const response = await apiClient.get(`/chat/sessions/${sessionId}/threads`);
+      return response.data as Array<{ id: string; session_id: string; title?: string; created_at: string; updated_at: string }>;
+    },
+    createThread: async (sessionId: string, title?: string) => {
+      const response = await apiClient.post(`/chat/sessions/${sessionId}/threads`, { title });
+      return response.data as { id: string; session_id: string; title?: string; created_at: string; updated_at: string };
+    },
+    getThreadHistory: async (sessionId: string, threadId: string): Promise<ChatHistory> => {
+      const response = await apiClient.get(`/chat/sessions/${sessionId}/threads/${threadId}/history`);
       return response.data;
     },
 

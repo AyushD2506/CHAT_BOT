@@ -52,6 +52,19 @@ class ChatSessionResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+# Chat Thread schemas
+class ChatThreadCreate(BaseModel):
+    title: Optional[str] = None
+
+class ChatThreadResponse(BaseModel):
+    id: str
+    session_id: str
+    title: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 # Document schemas
 class DocumentResponse(BaseModel):
     id: str
@@ -94,6 +107,7 @@ class RAGConfig(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str
+    thread_id: Optional[str] = None
     rag_config: Optional[RAGConfig] = None
 
 # Streaming response schema
@@ -101,3 +115,40 @@ class StreamResponse(BaseModel):
     content: str
     is_complete: bool
     rag_strategy: Optional[str] = None
+
+# MCP Tool schemas
+class MCPToolCreate(BaseModel):
+    name: str
+    tool_type: str  # 'api' | 'python_function'
+    api_url: Optional[str] = None
+    http_method: Optional[str] = "GET"
+    function_code: Optional[str] = None
+    description: Optional[str] = None
+    params_docstring: Optional[str] = None
+    returns_docstring: Optional[str] = None
+
+class MCPToolUpdate(BaseModel):
+    name: Optional[str] = None
+    tool_type: Optional[str] = None
+    api_url: Optional[str] = None
+    http_method: Optional[str] = None
+    function_code: Optional[str] = None
+    description: Optional[str] = None
+    params_docstring: Optional[str] = None
+    returns_docstring: Optional[str] = None
+
+class MCPToolResponse(BaseModel):
+    id: str
+    session_id: str
+    name: str
+    tool_type: str
+    api_url: Optional[str] = None
+    http_method: Optional[str] = None
+    function_code: Optional[str] = None
+    description: Optional[str] = None
+    params_docstring: Optional[str] = None
+    returns_docstring: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

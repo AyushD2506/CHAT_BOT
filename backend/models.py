@@ -39,6 +39,18 @@ class ChatSession(Base):
     documents = relationship("Document", back_populates="session")
     messages = relationship("ChatMessage", back_populates="session")
 
+class ChatThread(Base):
+    __tablename__ = "chat_threads"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False)
+    title = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    messages = relationship("ChatMessage", back_populates="thread")
+
 class Document(Base):
     __tablename__ = "documents"
     
@@ -60,6 +72,8 @@ class ChatMessage(Base):
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False)
+    # Thread support (nullable for backward compatibility / migration)
+    thread_id = Column(String, ForeignKey("chat_threads.id"), nullable=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     message_type = Column(String(20), nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
@@ -69,6 +83,7 @@ class ChatMessage(Base):
     # Relationships
     session = relationship("ChatSession", back_populates="messages")
     user = relationship("User", back_populates="chat_messages")
+    thread = relationship("ChatThread", back_populates="messages")
 
 class VectorStore(Base):
     __tablename__ = "vector_stores"
@@ -76,5 +91,28 @@ class VectorStore(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False)
     store_path = Column(String(500), nullable=False)  # Path to FAISS index
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class MCPTool(Base):
+    __tablename__ = "mcp_tools"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String, ForeignKey("chat_sessions.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    tool_type = Column(String(50), nullable=False)  # 'api' or 'python_function'
+
+    # API tool fields
+    api_url = Column(String(1000), nullable=True)
+    http_method = Column(String(10), default="GET")
+
+    # Python function tool fields
+    function_code = Column(Text, nullable=True)
+
+    # Documentation
+    description = Column(Text, nullable=True)
+    params_docstring = Column(Text, nullable=True)
+    returns_docstring = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

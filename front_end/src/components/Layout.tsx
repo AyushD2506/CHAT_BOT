@@ -16,24 +16,27 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className={`${isAdmin ? 'min-h-screen bg-gray-50' : 'min-h-screen bg-[#343541]'}`}>
       {/* Navigation Header */}
-      <nav className="bg-white shadow-sm border-b border-gray-200">
+      <nav className={`${isAdmin ? 'bg-white border-b border-gray-200' : 'bg-[#202123] border-b border-black/20'} sticky top-0 z-30`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
+          <div className="flex justify-between h-14">
             <div className="flex items-center">
-              <h1 className="text-xl font-semibold text-gray-900">
+              <h1 className={`${isAdmin ? 'text-lg font-semibold text-gray-900' : 'text-lg font-semibold text-gray-100'}`}>
                 RAG Chatbot {isAdmin ? '- Admin' : ''}
               </h1>
             </div>
             
             <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-600">
+              <span className={`${isAdmin ? 'text-sm text-gray-600' : 'text-sm text-gray-300'}`}>
                 Welcome, {user?.username}
               </span>
               <button
                 onClick={handleLogout}
-                className="inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                className={`${isAdmin
+                  ? 'inline-flex items-center px-3 py-2 text-sm leading-4 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500'
+                  : 'inline-flex items-center px-3 py-2 text-sm leading-4 font-medium rounded-md text-gray-100 bg-transparent border border-white/10 hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20'
+                }`}
               >
                 Logout
               </button>

@@ -33,13 +33,23 @@ export interface ChatSession {
   is_active: boolean;
   chunk_size: number;
   chunk_overlap: number;
+  enable_internet_search: boolean;
   document_count?: number;
+}
+
+export interface ChatThread {
+  id: string;
+  session_id: string;
+  title?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ChatSessionCreate {
   session_name: string;
   chunk_size?: number;
   chunk_overlap?: number;
+  enable_internet_search?: boolean;
 }
 
 export interface Document {
@@ -77,6 +87,7 @@ export interface RAGConfig {
 export interface ChatRequest {
   message: string;
   session_id: string;
+  thread_id?: string;
   rag_config?: RAGConfig;
 }
 
@@ -91,4 +102,19 @@ export interface Analytics {
   sessions: number;
   documents: number;
   messages: number;
+}
+
+export interface MCPTool {
+  id: string;
+  session_id: string;
+  name: string;
+  tool_type: 'api' | 'python_function';
+  api_url?: string;
+  http_method?: string;
+  function_code?: string;
+  description?: string;
+  params_docstring?: string;
+  returns_docstring?: string;
+  created_at: string;
+  updated_at: string;
 }

@@ -3,10 +3,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from database import get_db
-from models import User, ChatSession, ChatMessage, Document
+from models import User, ChatSession, ChatMessage, Document, ChatThread
 from schemas import (
     ChatRequest, ChatMessageResponse, ChatHistoryResponse,
-    ChatSessionResponse, StreamResponse, DocumentResponse
+    ChatSessionResponse, StreamResponse, DocumentResponse,
+    ChatThreadCreate, ChatThreadResponse
 )
 from auth_utils import get_current_user
 from rag_service import rag_service
@@ -88,6 +89,80 @@ async def get_chat_history(
     
     return ChatHistoryResponse(messages=messages)
 
+# =========================
+# Threaded chat endpoints
+# =========================
+
+@router.get("/sessions/{session_id}/threads", response_model=List[ChatThreadResponse])
+async def list_threads(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Validate session access
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not current_user.is_admin and session.user_id != current_user.id and not session.is_active:
+        raise HTTPException(status_code=403, detail="Access denied to this session")
+
+    result = await db.execute(
+        select(ChatThread).where(ChatThread.session_id == session_id).order_by(ChatThread.updated_at.desc())
+    )
+    threads = result.scalars().all()
+    return [ChatThreadResponse.model_validate(t) for t in threads]
+
+@router.post("/sessions/{session_id}/threads", response_model=ChatThreadResponse)
+async def create_thread(
+    session_id: str,
+    payload: ChatThreadCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Validate session access
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not current_user.is_admin and session.user_id != current_user.id and not session.is_active:
+        raise HTTPException(status_code=403, detail="Access denied to this session")
+
+    thread = ChatThread(session_id=session_id, title=payload.title)
+    db.add(thread)
+    await db.commit()
+    await db.refresh(thread)
+    return ChatThreadResponse.model_validate(thread)
+
+@router.get("/sessions/{session_id}/threads/{thread_id}/history", response_model=ChatHistoryResponse)
+async def get_thread_history(
+    session_id: str,
+    thread_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Validate session and thread
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not current_user.is_admin and session.user_id != current_user.id and not session.is_active:
+        raise HTTPException(status_code=403, detail="Access denied to this session")
+
+    result = await db.execute(select(ChatThread).where(ChatThread.id == thread_id, ChatThread.session_id == session_id))
+    thread = result.scalar_one_or_none()
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id, ChatMessage.thread_id == thread_id)
+        .order_by(ChatMessage.timestamp)
+        .limit(200)
+    )
+    messages = result.scalars().all()
+    return ChatHistoryResponse(messages=messages)
+
 @router.post("/message", response_model=ChatMessageResponse)
 async def send_message(
     chat_request: ChatRequest,
@@ -113,9 +188,20 @@ async def send_message(
         )
     
     try:
+        # Ensure a thread exists if provided or create one on demand
+        thread_id = chat_request.thread_id
+        if not thread_id:
+            # Create a new thread with a provisional title (first message)
+            new_thread = ChatThread(session_id=chat_request.session_id, title=None)
+            db.add(new_thread)
+            await db.commit()
+            await db.refresh(new_thread)
+            thread_id = new_thread.id
+
         # Save user message
         user_message = ChatMessage(
             session_id=chat_request.session_id,
+            thread_id=thread_id,
             user_id=current_user.id,
             message_type="user",
             content=chat_request.message
@@ -123,16 +209,23 @@ async def send_message(
         db.add(user_message)
         await db.commit()
         await db.refresh(user_message)
-        
+
+        # If thread title is empty, set it to first user message (trimmed)
+        result = await db.execute(select(ChatThread).where(ChatThread.id == thread_id))
+        thread = result.scalar_one_or_none()
+        if thread and (thread.title is None or thread.title.strip() == ""):
+            thread.title = (chat_request.message[:80]).strip()
+            await db.commit()
+
         # Get RAG configuration
         rag_config = chat_request.rag_config or {}
         strategy = rag_config.strategy or "contextual"
         k = rag_config.k or 5
-        
+
         # Use session's chunking config if not provided
         chunk_size = rag_config.chunk_size or session.chunk_size
         chunk_overlap = rag_config.chunk_overlap or session.chunk_overlap
-        
+
         # Get response from RAG service
         response_content = await rag_service.chat_with_memory(
             query=chat_request.message,
@@ -143,10 +236,11 @@ async def send_message(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap
         )
-        
+
         # Save assistant message
         assistant_message = ChatMessage(
             session_id=chat_request.session_id,
+            thread_id=thread_id,
             user_id=current_user.id,
             message_type="assistant",
             content=response_content,
@@ -155,9 +249,9 @@ async def send_message(
         db.add(assistant_message)
         await db.commit()
         await db.refresh(assistant_message)
-        
+
         return assistant_message
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

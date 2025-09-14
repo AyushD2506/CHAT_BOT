@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from database import get_db
-from models import User, ChatSession, Document, ChatMessage
+from models import User, ChatSession, Document, ChatMessage, MCPTool
 from schemas import (
     ChatSessionCreate, ChatSessionResponse, ChatSessionUpdate,
-    DocumentResponse, UserResponse
+    DocumentResponse, UserResponse, MCPToolCreate, MCPToolResponse, MCPToolUpdate
 )
 from auth_utils import get_current_admin
 from rag_service import rag_service
@@ -255,6 +255,46 @@ async def delete_document(
     
     return {"message": "Document deleted successfully"}
 
+@router.get("/documents/{document_id}/file")
+async def get_document_file(
+    document_id: str,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Stream a PDF document file for viewing (admin only)."""
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    document = result.scalar_one_or_none()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found"
+        )
+
+    # Resolve file path (handle relative paths)
+    file_path = document.file_path
+    path_obj = Path(file_path)
+    if not path_obj.is_absolute():
+        # backend root directory is two levels up from this file (routers/..)
+        base_dir = Path(__file__).resolve().parent.parent
+        path_obj = (base_dir / file_path).resolve()
+
+    if not path_obj.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found on server"
+        )
+
+    return FileResponse(
+        path=str(path_obj),
+        media_type="application/pdf",
+        filename=document.original_filename or document.filename,
+        headers={"Content-Disposition": f"inline; filename=\"{document.original_filename or document.filename}\""}
+    )
+
 @router.get("/analytics")
 async def get_analytics(
     current_admin: User = Depends(get_current_admin),
@@ -283,3 +323,95 @@ async def get_analytics(
         "documents": document_count,
         "messages": message_count
     }
+
+# MCP Tools (admin-only)
+@router.post("/sessions/{session_id}/mcp/tools", response_model=MCPToolResponse)
+async def create_mcp_tool(
+    session_id: str,
+    tool: MCPToolCreate,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    # Validate session
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    if tool.tool_type not in ("api", "python_function"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tool_type")
+
+    db_tool = MCPTool(
+        session_id=session_id,
+        name=tool.name,
+        tool_type=tool.tool_type,
+        api_url=tool.api_url,
+        http_method=tool.http_method or "GET",
+        function_code=tool.function_code,
+        description=tool.description,
+        params_docstring=tool.params_docstring,
+        returns_docstring=tool.returns_docstring,
+    )
+    db.add(db_tool)
+    await db.commit()
+    await db.refresh(db_tool)
+    return db_tool
+
+@router.get("/sessions/{session_id}/mcp/tools", response_model=List[MCPToolResponse])
+async def list_mcp_tools(
+    session_id: str,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(MCPTool).where(MCPTool.session_id == session_id))
+    return result.scalars().all()
+
+@router.put("/mcp/tools/{tool_id}", response_model=MCPToolResponse)
+async def update_mcp_tool(
+    tool_id: str,
+    updates: MCPToolUpdate,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(MCPTool).where(MCPTool.id == tool_id))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+
+    # Update fields if provided
+    if updates.name is not None:
+        tool.name = updates.name
+    if updates.tool_type is not None:
+        if updates.tool_type not in ("api", "python_function"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tool_type")
+        tool.tool_type = updates.tool_type
+    if updates.api_url is not None:
+        tool.api_url = updates.api_url
+    if updates.http_method is not None:
+        tool.http_method = updates.http_method
+    if updates.function_code is not None:
+        tool.function_code = updates.function_code
+    if updates.description is not None:
+        tool.description = updates.description
+    if updates.params_docstring is not None:
+        tool.params_docstring = updates.params_docstring
+    if updates.returns_docstring is not None:
+        tool.returns_docstring = updates.returns_docstring
+
+    await db.commit()
+    await db.refresh(tool)
+    return tool
+
+@router.delete("/mcp/tools/{tool_id}")
+async def delete_mcp_tool(
+    tool_id: str,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(MCPTool).where(MCPTool.id == tool_id))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+    await db.delete(tool)
+    await db.commit()
+    return {"message": "Tool deleted"}
