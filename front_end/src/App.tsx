@@ -4,8 +4,10 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import AdminDashboard from './pages/AdminDashboard';
+import SessionAdminDashboard from './pages/SessionAdminDashboard';
 import UserChat from './pages/UserChat';
 import Layout from './components/Layout';
+import AdminBlock from './components/AdminBlock';
 
 // Protected Route Component
 interface ProtectedRouteProps {
@@ -96,7 +98,20 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <Layout>
-                <UserChat />
+                {/* Prevent admins from using the chat UI */}
+                <AdminBlock>
+                  <UserChat />
+                </AdminBlock>
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/session-admin/*"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <SessionAdminDashboard />
               </Layout>
             </ProtectedRoute>
           }

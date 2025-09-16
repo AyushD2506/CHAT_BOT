@@ -21,6 +21,7 @@ from langchain.memory import ConversationBufferWindowMemory
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from models import ChatSession, ChatMessage, Document as DocModel, MCPTool
+from search_service import search_service
 
 class RAGService:
     def __init__(self):
@@ -551,8 +552,40 @@ Provide JSON only, no extra text.
             print(f"[MCP][ERROR] session={session_id} tool_exec_failed: {e}")
             return None
 
+    async def _get_internet_search_results(self, query: str, session_id: str, db: AsyncSession, force: bool = False) -> Optional[str]:
+        """Get internet search results if enabled for the session.
+        When force=True, bypass the heuristic check and always perform the search.
+        """
+        try:
+            # Check if internet search is enabled for this session
+            result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+            session = result.scalar_one_or_none()
+            
+            if not session or not session.enable_internet_search:
+                return None
+            
+            # Heuristic gate only when not forced
+            if not force:
+                if not search_service.is_search_needed(query):
+                    return None
+            
+            # Perform search
+            search_results = search_service.search(query, max_results=5)
+            
+            if not search_results:
+                return None
+            
+            # Format results for LLM
+            formatted_results = search_service.format_search_results_for_llm(search_results)
+            
+            return formatted_results
+            
+        except Exception as e:
+            print(f"Error in internet search: {e}")
+            return None
+
     async def chat_with_memory(self, query: str, session_id: str, db: AsyncSession, strategy: str = "contextual", **kwargs) -> str:
-        """Main chat function with memory support + automatic MCP tool routing"""
+        """Main chat function with memory support + automatic MCP tool routing + internet search"""
         # 1) Explicit tool invocation (heuristics still respected)
         mcp_response = await self._maybe_execute_mcp_tool(query, session_id, db)
         if mcp_response is not None:
@@ -595,7 +628,57 @@ Provide a concise, user-friendly answer. If the tool output is an error, explain
             except Exception:
                 return auto_response
 
-        # 3) Fall back to selected RAG strategy
+        # 3) Internet search (if enabled)
+        internet_results = await self._get_internet_search_results(query, session_id, db)
+        if internet_results:
+            try:
+                # Combine internet search with RAG strategy
+                rag_response = await self._get_rag_response(query, session_id, db, strategy, **kwargs)
+                
+                # Combine both responses
+                combined_prompt = f"""
+Based on the following information sources, provide a comprehensive answer to the user's question.
+
+User Question: {query}
+
+Document Context (from uploaded PDFs):
+{rag_response}
+
+Internet Search Results:
+{internet_results}
+
+Please provide a well-structured answer that combines relevant information from both the uploaded documents and current internet sources. 
+If there are conflicts between sources, mention them and provide the most recent/authoritative information.
+If the internet search provides more current information, prioritize that while still referencing the document context where relevant.
+"""
+                
+                response = self.llm.invoke(combined_prompt)
+                return response.content
+                
+            except Exception as e:
+                print(f"Error combining internet search with RAG: {e}")
+                # Fall back to just internet search
+                try:
+                    internet_prompt = f"""
+Based on the following internet search results, answer the user's question.
+
+User Question: {query}
+
+Search Results:
+{internet_results}
+
+Provide a comprehensive answer based on the search results.
+"""
+                    response = self.llm.invoke(internet_prompt)
+                    return response.content
+                except Exception:
+                    return internet_results
+
+        # 4) Fall back to selected RAG strategy
+        return await self._get_rag_response(query, session_id, db, strategy, **kwargs)
+
+    async def _get_rag_response(self, query: str, session_id: str, db: AsyncSession, strategy: str, **kwargs) -> str:
+        """Get RAG response using the specified strategy"""
         if strategy == "naive":
             return await self.naive_rag(query, session_id, k=kwargs.get('k', 5))
         elif strategy == "chunking":

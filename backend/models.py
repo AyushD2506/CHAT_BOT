@@ -17,7 +17,9 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    chat_sessions = relationship("ChatSession", back_populates="user")
+    chat_sessions = relationship("ChatSession", back_populates="user", foreign_keys="ChatSession.user_id")
+    # Sessions where this user is the per-session admin
+    session_admin_for = relationship("ChatSession", foreign_keys="ChatSession.session_admin_id")
     chat_messages = relationship("ChatMessage", back_populates="user")
 
 class ChatSession(Base):
@@ -26,6 +28,8 @@ class ChatSession(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_name = Column(String(100), nullable=False)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    # Per-session admin (limited management rights for this session only)
+    session_admin_id = Column(String, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
@@ -34,10 +38,15 @@ class ChatSession(Base):
     chunk_size = Column(Integer, default=1000)
     chunk_overlap = Column(Integer, default=200)
     
+    # Internet search configuration
+    enable_internet_search = Column(Boolean, default=False)
+    
     # Relationships
-    user = relationship("User", back_populates="chat_sessions")
+    user = relationship("User", back_populates="chat_sessions", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="session")
     messages = relationship("ChatMessage", back_populates="session")
+    # Relationship to session admin user
+    session_admin = relationship("User", foreign_keys=[session_admin_id])
 
 class ChatThread(Base):
     __tablename__ = "chat_threads"

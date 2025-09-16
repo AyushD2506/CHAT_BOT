@@ -28,6 +28,7 @@ export interface ChatSession {
   id: string;
   session_name: string;
   user_id: string;
+  session_admin_id?: string | null;
   created_at: string;
   updated_at: string;
   is_active: boolean;
@@ -50,6 +51,7 @@ export interface ChatSessionCreate {
   chunk_size?: number;
   chunk_overlap?: number;
   enable_internet_search?: boolean;
+  session_admin_id?: string; // optional when created by global admin
 }
 
 export interface Document {
@@ -89,6 +91,9 @@ export interface ChatRequest {
   session_id: string;
   thread_id?: string;
   rag_config?: RAGConfig;
+  // If true, prioritize internet search results first (when session allows);
+  // if false or omitted, internet search is used as last fallback.
+  prefer_internet_first?: boolean;
 }
 
 export interface StreamResponse {

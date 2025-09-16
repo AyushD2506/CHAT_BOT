@@ -10,6 +10,8 @@ const UserChat: React.FC = () => {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
+  // Internet priority toggle: per-message UI switch
+  const [preferInternetFirst, setPreferInternetFirst] = useState<boolean>(false);
   const [loadingSessions, setLoadingSessions] = useState<boolean>(false);
   const [loadingHistory, setLoadingHistory] = useState<boolean>(false);
   const [sending, setSending] = useState<boolean>(false);
@@ -127,6 +129,7 @@ const UserChat: React.FC = () => {
         session_id: selectedSessionId,
         thread_id: threadId!,
         rag_config: defaultRagConfig,
+        prefer_internet_first: preferInternetFirst,
       };
 
       const assistantMsg = await api.chat.sendMessage(payload);
@@ -183,12 +186,29 @@ const UserChat: React.FC = () => {
       {/* Chat Area */}
       <div className="flex-1 flex flex-col">
         {/* Chat Header */}
-        <div className="bg-[#343541] border-b border-black/20 p-4">
+        <div className="bg-[#343541] border-b border-black/20 p-4 flex items-center justify-between">
           <h3 className="text-sm font-medium text-gray-200">
             {selectedSessionId
               ? sessions.find((s) => s.id === selectedSessionId)?.session_name || 'Chat'
               : 'Select a session to start chatting'}
           </h3>
+          {/* Per-message Internet Search Priority Toggle (show only if current session allows internet search) */}
+          {selectedSessionId && sessions.find((s) => s.id === selectedSessionId)?.enable_internet_search && (
+            <div className="flex items-center space-x-2">
+              <label className="text-xs text-gray-300" title="If ON: use Internet first (if session allows). If OFF: use documents first and Internet as fallback.">
+                Internet first
+              </label>
+              <button
+                type="button"
+                onClick={() => setPreferInternetFirst((v) => !v)}
+                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${preferInternetFirst ? 'bg-emerald-500' : 'bg-gray-600'}`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${preferInternetFirst ? 'translate-x-5' : 'translate-x-1'}`}
+                />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Tabs and content */}

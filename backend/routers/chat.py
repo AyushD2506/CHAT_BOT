@@ -23,13 +23,11 @@ async def list_user_sessions(
     db: AsyncSession = Depends(get_db)
 ):
     """List available chat sessions
-    - Admins: see all sessions
+    - Admins: chat use is disabled (return empty list)
     - Regular users: see all active sessions (admin-created included)
     """
     if current_user.is_admin:
-        result = await db.execute(
-            select(ChatSession).order_by(ChatSession.created_at.desc())
-        )
+        return []
     else:
         # Show all active sessions to regular users
         result = await db.execute(
@@ -71,8 +69,11 @@ async def get_chat_history(
             detail="Session not found"
         )
     
-    # Check access: allow if admin OR owner OR session is active
-    if not current_user.is_admin and session.user_id != current_user.id and not session.is_active:
+    # Admins cannot use chat endpoints
+    if current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins cannot use chat")
+    # Regular users: allow if owner or session is active
+    if session.user_id != current_user.id and not session.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this session"
@@ -169,7 +170,7 @@ async def send_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Send a message and get RAG response"""
+    """Send a message and get RAG/internet response with prioritization"""
     # Verify user has access to this session
     result = await db.execute(select(ChatSession).where(ChatSession.id == chat_request.session_id))
     session = result.scalar_one_or_none()
@@ -226,16 +227,51 @@ async def send_message(
         chunk_size = rag_config.chunk_size or session.chunk_size
         chunk_overlap = rag_config.chunk_overlap or session.chunk_overlap
 
-        # Get response from RAG service
-        response_content = await rag_service.chat_with_memory(
-            query=chat_request.message,
-            session_id=chat_request.session_id,
-            db=db,
-            strategy=strategy,
-            k=k,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
-        )
+        # Prioritization flag from client per message
+        prefer_internet_first = bool(getattr(chat_request, 'prefer_internet_first', False))
+
+        # Branching based on prioritization and session internet setting
+        response_content: str
+        if prefer_internet_first and session.enable_internet_search:
+            # Try internet first; force internet search (bypass heuristic) then fall back to RAG
+            try:
+                internet_results = await rag_service._get_internet_search_results(
+                    chat_request.message, chat_request.session_id, db, force=True
+                )
+            except Exception:
+                internet_results = None
+
+            if internet_results:
+                try:
+                    combined_prompt = f"""
+Based on the following internet search results, answer the user's question. If useful, you may also leverage document context.
+
+User Question: {chat_request.message}
+
+Internet Search Results:
+{internet_results}
+"""
+                    resp = rag_service.llm.invoke(combined_prompt)
+                    response_content = getattr(resp, 'content', str(resp))
+                except Exception:
+                    response_content = internet_results  # already formatted text
+            else:
+                # Fall back to standard RAG
+                response_content = await rag_service._get_rag_response(
+                    chat_request.message, chat_request.session_id, db, strategy,
+                    k=k, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                )
+        else:
+            # Default pipeline: tools -> internet (if enabled) -> RAG, already handled in chat_with_memory
+            response_content = await rag_service.chat_with_memory(
+                query=chat_request.message,
+                session_id=chat_request.session_id,
+                db=db,
+                strategy=strategy,
+                k=k,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
 
         # Save assistant message
         assistant_message = ChatMessage(

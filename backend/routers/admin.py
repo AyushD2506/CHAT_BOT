@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from database import get_db
-from models import User, ChatSession, Document, ChatMessage, MCPTool
+from models import User, ChatSession, Document, ChatMessage, MCPTool, ChatThread, VectorStore
 from schemas import (
     ChatSessionCreate, ChatSessionResponse, ChatSessionUpdate,
     DocumentResponse, UserResponse, MCPToolCreate, MCPToolResponse, MCPToolUpdate
@@ -25,8 +25,10 @@ async def create_session(
     db_session = ChatSession(
         session_name=session_data.session_name,
         user_id=current_admin.id,
+        session_admin_id=session_data.session_admin_id or current_admin.id,
         chunk_size=session_data.chunk_size,
-        chunk_overlap=session_data.chunk_overlap
+        chunk_overlap=session_data.chunk_overlap,
+        enable_internet_search=session_data.enable_internet_search or False,
     )
     
     db.add(db_session)
@@ -118,6 +120,16 @@ async def update_session(
         session.chunk_overlap = session_update.chunk_overlap
     if session_update.is_active is not None:
         session.is_active = session_update.is_active
+    if session_update.enable_internet_search is not None:
+        session.enable_internet_search = session_update.enable_internet_search
+    # Allow global admin to change session_admin_id
+    if session_update.session_admin_id is not None:
+        # Validate user exists
+        result = await db.execute(select(User).where(User.id == session_update.session_admin_id))
+        new_admin = result.scalar_one_or_none()
+        if not new_admin:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_admin_id user not found")
+        session.session_admin_id = session_update.session_admin_id
     
     await db.commit()
     await db.refresh(session)
@@ -148,16 +160,21 @@ async def delete_session(
             detail="Session not found"
         )
     
-    # Delete related data
+    # Delete related data in FK-safe order
     await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
     await db.execute(delete(Document).where(Document.session_id == session_id))
+    await db.execute(delete(ChatThread).where(ChatThread.session_id == session_id))
+    await db.execute(delete(MCPTool).where(MCPTool.session_id == session_id))
+    await db.execute(delete(VectorStore).where(VectorStore.session_id == session_id))
+
+    # Finally delete the session
     await db.delete(session)
-    
-    # Delete RAG service data
+
+    # Delete RAG service data on disk/external stores
     await rag_service.delete_session_data(session_id)
-    
+
     await db.commit()
-    
+
     return {"message": "Session deleted successfully"}
 
 @router.post("/sessions/{session_id}/documents", response_model=DocumentResponse)

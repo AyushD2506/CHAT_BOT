@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from database import init_db
 from routers import auth, admin, chat, documents
+from routers import session_admin as session_admin_router
 
 # Initialize database on startup
 @asynccontextmanager
@@ -25,7 +26,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React app URL
+    allow_origins=["http://localhost:3000"],  # Explicitly allow frontend origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,6 +36,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(session_admin_router.router, prefix="/api/session-admin", tags=["session-admin"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 
 @app.get("/")

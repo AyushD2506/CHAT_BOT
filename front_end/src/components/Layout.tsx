@@ -1,6 +1,7 @@
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { api } from '../services/api';
 
 interface LayoutProps {
   children: ReactNode;
@@ -9,6 +10,26 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
+  const [hasAssignedSessions, setHasAssignedSessions] = useState<boolean>(false);
+
+  // If not a global admin, check if the user has any assigned sessions
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAssigned = async () => {
+      try {
+        if (!isAdmin) {
+          const mySessions = await api.sessionAdmin.listMySessions();
+          if (isMounted) setHasAssignedSessions(mySessions.length > 0);
+        } else {
+          if (isMounted) setHasAssignedSessions(false);
+        }
+      } catch {
+        if (isMounted) setHasAssignedSessions(false);
+      }
+    };
+    fetchAssigned();
+    return () => { isMounted = false; };
+  }, [isAdmin]);
 
   const handleLogout = () => {
     logout();
@@ -31,6 +52,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               <span className={`${isAdmin ? 'text-sm text-gray-600' : 'text-sm text-gray-300'}`}>
                 Welcome, {user?.username}
               </span>
+              {/* Quick links */}
+              {isAdmin && (
+                <a href={'/admin'} className={`text-sm text-blue-600 hover:text-blue-800`}>
+                  Admin Dashboard
+                </a>
+              )}
+              {!isAdmin && hasAssignedSessions && (
+                <a href={'/session-admin'} className={`text-sm text-blue-300 hover:text-blue-200`}>
+                  Session Admin
+                </a>
+              )}
+              <a href="/chat" className={`${isAdmin ? 'text-sm text-gray-600 hover:text-gray-800' : 'text-sm text-gray-300 hover:text-gray-100'}`}>Chat</a>
               <button
                 onClick={handleLogout}
                 className={`${isAdmin

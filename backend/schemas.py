@@ -32,22 +32,30 @@ class ChatSessionCreate(BaseModel):
     session_name: str
     chunk_size: Optional[int] = 1000
     chunk_overlap: Optional[int] = 200
+    enable_internet_search: Optional[bool] = False
+    # Optional assignment at creation time
+    session_admin_id: Optional[str] = None
 
 class ChatSessionUpdate(BaseModel):
     session_name: Optional[str] = None
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
     is_active: Optional[bool] = None
+    enable_internet_search: Optional[bool] = None
+    # Allow changing session admin via admin routes only (ignored in session-admin routes)
+    session_admin_id: Optional[str] = None
 
 class ChatSessionResponse(BaseModel):
     id: str
     session_name: str
     user_id: str
+    session_admin_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     is_active: bool
     chunk_size: int
     chunk_overlap: int
+    enable_internet_search: bool
     document_count: Optional[int] = 0
 
     model_config = ConfigDict(from_attributes=True)
@@ -109,6 +117,8 @@ class ChatRequest(BaseModel):
     session_id: str
     thread_id: Optional[str] = None
     rag_config: Optional[RAGConfig] = None
+    # If True (and session allows), prioritize internet search answers first; if False, internet is last/fallback
+    prefer_internet_first: Optional[bool] = None
 
 # Streaming response schema
 class StreamResponse(BaseModel):

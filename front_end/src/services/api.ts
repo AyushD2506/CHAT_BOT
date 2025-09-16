@@ -13,7 +13,8 @@ import {
   Analytics,
 } from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+// Use CRA dev proxy by default to avoid CORS in development
+const API_BASE_URL = process.env.REACT_APP_API_URL || '/api';
 
 // Create axios instance
 const apiClient = axios.create({
@@ -91,7 +92,7 @@ export const api = {
       return response.data;
     },
 
-    updateSession: async (sessionId: string, updates: Partial<ChatSessionCreate>): Promise<ChatSession> => {
+    updateSession: async (sessionId: string, updates: Partial<ChatSessionCreate & { is_active?: boolean }>): Promise<ChatSession> => {
       const response = await apiClient.put(`/admin/sessions/${sessionId}`, updates);
       return response.data;
     },
@@ -253,6 +254,96 @@ export const api = {
     getDocument: async (documentId: string): Promise<Document> => {
       const response = await apiClient.get(`/documents/${documentId}`);
       return response.data;
+    },
+  },
+
+  // Session Admin endpoints
+  sessionAdmin: {
+    listMySessions: async (): Promise<ChatSession[]> => {
+      const response = await apiClient.get('/session-admin/sessions');
+      return response.data;
+    },
+    getSession: async (sessionId: string): Promise<ChatSession> => {
+      const response = await apiClient.get(`/session-admin/sessions/${sessionId}`);
+      return response.data;
+    },
+    updateSession: async (
+      sessionId: string,
+      payload: Partial<Pick<ChatSession, 'session_name' | 'chunk_size' | 'chunk_overlap' | 'is_active' | 'enable_internet_search'>>
+    ): Promise<ChatSession> => {
+      const response = await apiClient.put(`/session-admin/sessions/${sessionId}`, payload);
+      return response.data;
+    },
+    uploadDocument: async (sessionId: string, file: File): Promise<Document> => {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await apiClient.post(`/session-admin/sessions/${sessionId}/documents`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return response.data;
+    },
+    listDocuments: async (sessionId: string): Promise<Document[]> => {
+      const response = await apiClient.get(`/session-admin/sessions/${sessionId}/documents`);
+      return response.data;
+    },
+    deleteDocument: async (documentId: string): Promise<void> => {
+      await apiClient.delete(`/session-admin/documents/${documentId}`);
+    },
+    getDocumentFileBlob: async (documentId: string): Promise<Blob> => {
+      const response = await fetch(`${API_BASE_URL}/session-admin/documents/${documentId}/file`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token') || ''}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to fetch document file');
+      }
+      return await response.blob();
+    },
+    deleteSession: async (sessionId: string): Promise<void> => {
+      await apiClient.delete(`/session-admin/sessions/${sessionId}`);
+    },
+    // MCP tools
+    createTool: async (
+      sessionId: string,
+      payload: {
+        name: string;
+        tool_type: 'api' | 'python_function';
+        api_url?: string;
+        http_method?: string;
+        function_code?: string;
+        description?: string;
+        params_docstring?: string;
+        returns_docstring?: string;
+      }
+    ) => {
+      const response = await apiClient.post(`/session-admin/sessions/${sessionId}/mcp/tools`, payload);
+      return response.data;
+    },
+    listTools: async (sessionId: string) => {
+      const response = await apiClient.get(`/session-admin/sessions/${sessionId}/mcp/tools`);
+      return response.data;
+    },
+    updateTool: async (
+      sessionId: string,
+      toolId: string,
+      payload: Partial<{
+        name: string;
+        tool_type: 'api' | 'python_function';
+        api_url: string;
+        http_method: string;
+        function_code: string;
+        description: string;
+        params_docstring: string;
+        returns_docstring: string;
+      }>
+    ) => {
+      const response = await apiClient.put(`/session-admin/sessions/${sessionId}/mcp/tools/${toolId}`, payload);
+      return response.data;
+    },
+    deleteTool: async (sessionId: string, toolId: string) => {
+      await apiClient.delete(`/session-admin/sessions/${sessionId}/mcp/tools/${toolId}`);
     },
   },
 };

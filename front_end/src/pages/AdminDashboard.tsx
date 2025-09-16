@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
-import { ChatSession, Document, Analytics } from '../types';
+import { ChatSession, Document, Analytics, User } from '../types';
+import RowActionMenu from '../components/RowActionMenu';
+import StatCard from '../components/StatCard';
 
 const AdminDashboard: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -8,6 +10,8 @@ const AdminDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [users, setUsers] = useState<User[]>([]);
+  const [selectedSessionAdminId, setSelectedSessionAdminId] = useState<string>('');
   const [selectedSession, setSelectedSession] = useState<string>('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -37,6 +41,16 @@ const AdminDashboard: React.FC = () => {
     loadDashboardData();
   }, []);
 
+  // Load users list lazily when opening Create Session modal
+  useEffect(() => {
+    if (showCreateModal) {
+      api.auth
+        .listUsers()
+        .then(setUsers)
+        .catch(() => setError('Failed to load users'));
+    }
+  }, [showCreateModal]);
+
   const loadDashboardData = async () => {
     setLoading(true);
     try {
@@ -64,7 +78,8 @@ const AdminDashboard: React.FC = () => {
         session_name: sessionName,
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
-        enable_internet_search: enableInternetSearch
+        enable_internet_search: enableInternetSearch,
+        session_admin_id: selectedSessionAdminId || undefined,
       });
       
       setSessions(prev => [newSession, ...prev]);
@@ -192,17 +207,10 @@ const AdminDashboard: React.FC = () => {
       {/* Analytics Cards */}
       {analytics && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          {[
-            { label: 'Users', value: analytics.users, color: 'from-purple-500 to-purple-600' },
-            { label: 'Sessions', value: analytics.sessions, color: 'from-blue-500 to-blue-600' },
-            { label: 'Documents', value: analytics.documents, color: 'from-emerald-500 to-emerald-600' },
-            { label: 'Messages', value: analytics.messages, color: 'from-orange-500 to-orange-600' },
-          ].map((card) => (
-            <div key={card.label} className="bg-white p-6 rounded-xl shadow-sm ring-1 ring-gray-100">
-              <h3 className="text-sm font-medium text-gray-500 mb-2">{card.label}</h3>
-              <p className={`text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r ${card.color}`}>{card.value}</p>
-            </div>
-          ))}
+          <StatCard label="Users" value={analytics.users} kind="users" />
+          <StatCard label="Sessions" value={analytics.sessions} kind="sessions" />
+          <StatCard label="Documents" value={analytics.documents} kind="documents" />
+          <StatCard label="Messages" value={analytics.messages} kind="messages" />
         </div>
       )}
 
@@ -277,9 +285,11 @@ const AdminDashboard: React.FC = () => {
                       {session.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-3">
-                    <button
-                      onClick={async () => {
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <RowActionMenu
+                      disabled={loading}
+                      isExpanded={expandedSessionId === session.id}
+                      onToggleExpand={async () => {
                         const nextId = expandedSessionId === session.id ? null : session.id;
                         setExpandedSessionId(nextId);
                         setSelectedDocumentId(null);
@@ -293,15 +303,38 @@ const AdminDashboard: React.FC = () => {
                           }
                         }
                       }}
-                      className="text-indigo-600 hover:text-indigo-800"
-                    >
-                      {expandedSessionId === session.id ? 'Hide' : 'Open'} Session
-                    </button>
-                    {/* Manage MCP Tools */}
-                    <button
-                      onClick={async () => {
+                      isActive={session.is_active}
+                      onToggleActive={async () => {
+                        try {
+                          const updated = await api.admin.updateSession(session.id, { is_active: !session.is_active });
+                          setSessions(prev => prev.map(s => s.id === session.id ? { ...s, is_active: updated.is_active } : s));
+                          setSuccess(`Session ${!session.is_active ? 'activated' : 'disabled'} successfully`);
+                        } catch (err: any) {
+                          setError(err.response?.data?.detail || 'Failed to update session status');
+                        }
+                      }}
+                      isSearchEnabled={session.enable_internet_search}
+                      onToggleSearch={async () => {
+                        try {
+                          await api.admin.updateSession(session.id, {
+                            enable_internet_search: !session.enable_internet_search,
+                          });
+                          setSessions(prev => prev.map(s =>
+                            s.id === session.id
+                              ? { ...s, enable_internet_search: !s.enable_internet_search }
+                              : s
+                          ));
+                          setSuccess(`Internet search ${!session.enable_internet_search ? 'enabled' : 'disabled'} for session`);
+                        } catch (err: any) {
+                          setError(err.response?.data?.detail || 'Failed to update internet search setting');
+                        }
+                      }}
+                      onUploadPDF={() => {
+                        setSelectedSession(session.id);
+                        setShowUploadModal(true);
+                      }}
+                      onManageTools={async () => {
                         setExpandedSessionId(session.id);
-                        // open tools manager modal for this session
                         setManageToolsSessionId(session.id);
                         setShowToolsModal(true);
                         try {
@@ -311,51 +344,8 @@ const AdminDashboard: React.FC = () => {
                           setError('Failed to load tools');
                         }
                       }}
-                      className="text-purple-600 hover:text-purple-800"
-                    >
-                      Manage MCP Tools
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSelectedSession(session.id);
-                        setShowUploadModal(true);
-                      }}
-                      className="text-blue-600 hover:text-blue-800"
-                    >
-                      Upload PDF
-                    </button>
-                    <button
-                      onClick={async () => {
-                        try {
-                          await api.admin.updateSession(session.id, {
-                            enable_internet_search: !session.enable_internet_search
-                          });
-                          setSessions(prev => prev.map(s => 
-                            s.id === session.id 
-                              ? { ...s, enable_internet_search: !s.enable_internet_search }
-                              : s
-                          ));
-                          setSuccess(`Internet search ${!session.enable_internet_search ? 'enabled' : 'disabled'} for session`);
-                        } catch (err: any) {
-                          setError(err.response?.data?.detail || 'Failed to update internet search setting');
-                        }
-                      }}
-                      className={`text-sm px-2 py-1 rounded ${
-                        session.enable_internet_search 
-                          ? 'text-orange-600 hover:text-orange-800 bg-orange-50' 
-                          : 'text-blue-600 hover:text-blue-800 bg-blue-50'
-                      }`}
-                      disabled={loading}
-                    >
-                      {session.enable_internet_search ? 'Disable Search' : 'Enable Search'}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteSession(session.id)}
-                      className="text-red-600 hover:text-red-800"
-                      disabled={loading}
-                    >
-                      Delete
-                    </button>
+                      onDelete={() => handleDeleteSession(session.id)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -515,6 +505,27 @@ const AdminDashboard: React.FC = () => {
                 <p className="mt-1 text-xs text-gray-500">
                   When enabled, the chatbot will search the internet for current information when needed
                 </p>
+              </div>
+
+              {/* Session Admin selector */}
+              <div className="mb-6">
+                <label htmlFor="sessionAdmin" className="block text-sm font-medium text-gray-700 mb-2">
+                  Session Admin (optional)
+                </label>
+                <select
+                  id="sessionAdmin"
+                  value={selectedSessionAdminId}
+                  onChange={(e) => setSelectedSessionAdminId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Default to current admin</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.username} ({u.email}){u.is_admin ? ' [global admin]' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">If empty, the creating admin will be set as session admin.</p>
               </div>
               <div className="flex justify-end space-x-3">
                 <button
