@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { ChatSession, Document, MCPTool } from '../types';
-import RowActionMenu from '../components/RowActionMenu';
+import RowActionBar from '../components/RowActionBar';
 
 const SessionAdminDashboard: React.FC = () => {
   // Sessions/table state
@@ -223,8 +223,8 @@ const SessionAdminDashboard: React.FC = () => {
                       {session.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <RowActionMenu
+                  <td className="px-6 py-4 text-sm font-medium">
+                    <RowActionBar
                       disabled={loading}
                       isExpanded={expandedSessionId === session.id}
                       onToggleExpand={() => openSessionPanel(session.id)}
