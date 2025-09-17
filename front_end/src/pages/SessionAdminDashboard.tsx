@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { ChatSession, Document, MCPTool } from '../types';
 import RowActionBar from '../components/RowActionBar';
+import ModelConfigModal, { ModelConfigForm } from '../components/ModelConfigModal';
 
 const SessionAdminDashboard: React.FC = () => {
   // Sessions/table state
@@ -37,6 +38,11 @@ const SessionAdminDashboard: React.FC = () => {
     params_docstring?: string;
     returns_docstring?: string;
   }>({ name: '', tool_type: 'api', http_method: 'GET' });
+
+  // Model config modal state
+  const [showModelConfig, setShowModelConfig] = useState(false);
+  const [modelConfigSessionId, setModelConfigSessionId] = useState<string | null>(null);
+  const [modelConfigInitial, setModelConfigInitial] = useState<Partial<ModelConfigForm>>({});
 
   // Config quick-edit state (inline in table or panel not required; we mirror Admin actions for toggle internet)
 
@@ -255,6 +261,17 @@ const SessionAdminDashboard: React.FC = () => {
                           setError('Failed to load tools');
                         }
                       }}
+                      onConfigureModel={() => {
+                        setModelConfigSessionId(session.id);
+                        setModelConfigInitial({
+                          model_provider: (session.model_provider as any) || undefined,
+                          model_name: session.model_name || undefined,
+                          model_temperature: session.model_temperature ?? undefined,
+                          model_max_output_tokens: session.model_max_output_tokens ?? undefined,
+                          model_base_url: session.model_base_url || undefined,
+                        });
+                        setShowModelConfig(true);
+                      }}
                       onDelete={() => deleteSession(session.id)}
                     />
                   </td>
@@ -378,6 +395,26 @@ const SessionAdminDashboard: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Model Config Modal */}
+      {showModelConfig && (
+        <ModelConfigModal
+          open={showModelConfig}
+          onClose={() => setShowModelConfig(false)}
+          initial={modelConfigInitial}
+          onSave={async (payload: ModelConfigForm) => {
+            if (!modelConfigSessionId) return;
+            try {
+              const updated = await api.sessionAdmin.updateSession(modelConfigSessionId, payload);
+              setSessions(prev => prev.map(s => s.id === modelConfigSessionId ? { ...s, ...updated } : s));
+              setSuccess('Model configuration updated');
+            } catch (e: any) {
+              setError(e.response?.data?.detail || 'Failed to update model configuration');
+              throw e;
+            }
+          }}
+        />
       )}
 
       {/* MCP Tools Manager Modal */}

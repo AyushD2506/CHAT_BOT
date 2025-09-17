@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  EllipsisVerticalIcon,
   EyeIcon,
   EyeSlashIcon,
   DocumentArrowUpIcon,
@@ -10,6 +9,7 @@ import {
   PauseCircleIcon,
   GlobeAltIcon,
   NoSymbolIcon,
+  AdjustmentsHorizontalIcon,
 } from '@heroicons/react/24/outline';
 
 interface RowActionBarProps {
@@ -24,6 +24,7 @@ interface RowActionBarProps {
 
   onUploadPDF?: () => void;
   onManageTools?: () => void;
+  onConfigureModel?: () => void;
   onDelete?: () => void;
   disabled?: boolean;
 }
@@ -42,6 +43,7 @@ const RowActionBar: React.FC<RowActionBarProps> = ({
   onToggleSearch,
   onUploadPDF,
   onManageTools,
+  onConfigureModel,
   onDelete,
   disabled,
 }) => {
@@ -141,6 +143,23 @@ const RowActionBar: React.FC<RowActionBarProps> = ({
         >
           <WrenchScrewdriverIcon className="h-4 w-4 text-purple-600" />
           <span>Tools</span>
+        </button>
+      )}
+
+      {onConfigureModel && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onConfigureModel}
+          className={classNames(
+            'inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50',
+            disabled && 'opacity-50 cursor-not-allowed'
+          )}
+          aria-label="Configure Model"
+          title="Configure Model"
+        >
+          <AdjustmentsHorizontalIcon className="h-4 w-4 text-indigo-600" />
+          <span>Model</span>
         </button>
       )}
 

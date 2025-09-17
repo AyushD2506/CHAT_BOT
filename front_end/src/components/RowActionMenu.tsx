@@ -11,6 +11,7 @@ import {
   PauseCircleIcon,
   GlobeAltIcon,
   NoSymbolIcon,
+  AdjustmentsHorizontalIcon,
 } from '@heroicons/react/24/outline';
 
 interface RowActionMenuProps {
@@ -25,6 +26,7 @@ interface RowActionMenuProps {
 
   onUploadPDF?: () => void;
   onManageTools?: () => void;
+  onConfigureModel?: () => void;
   onDelete?: () => void;
   disabled?: boolean;
 }
@@ -42,6 +44,7 @@ const RowActionMenu: React.FC<RowActionMenuProps> = ({
   onToggleSearch,
   onUploadPDF,
   onManageTools,
+  onConfigureModel,
   onDelete,
   disabled,
 }) => {
@@ -118,6 +121,22 @@ const RowActionMenu: React.FC<RowActionMenuProps> = ({
                   >
                     <WrenchScrewdriverIcon className="h-5 w-5 text-purple-500" />
                     Manage MCP Tools
+                  </button>
+                )}
+              </Menu.Item>
+            )}
+            {onConfigureModel && (
+              <Menu.Item>
+                {({ active }) => (
+                  <button
+                    onClick={onConfigureModel}
+                    className={classNames(
+                      active ? 'bg-gray-50 text-gray-900' : 'text-gray-700',
+                      'group flex w-full items-center gap-2 px-4 py-2 text-sm'
+                    )}
+                  >
+                    <AdjustmentsHorizontalIcon className="h-5 w-5 text-indigo-500" />
+                    Configure Model
                   </button>
                 )}
               </Menu.Item>

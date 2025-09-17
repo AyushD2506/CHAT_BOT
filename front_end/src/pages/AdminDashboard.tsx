@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { ChatSession, Document, Analytics, User } from '../types';
-import RowActionMenu from '../components/RowActionMenu';
+import RowActionBar from '../components/RowActionBar';
 import StatCard from '../components/StatCard';
+import ModelConfigModal, { ModelConfigForm } from '../components/ModelConfigModal';
 
 const AdminDashboard: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -28,6 +29,11 @@ const AdminDashboard: React.FC = () => {
   const [tools, setTools] = useState<import('../types').MCPTool[]>([]);
   const [toolForm, setToolForm] = useState<{ id?: string; name: string; tool_type: 'api' | 'python_function'; api_url?: string; http_method?: string; function_code?: string; description?: string; params_docstring?: string; returns_docstring?: string }>({ name: '', tool_type: 'api', http_method: 'GET' });
   const [toolMode, setToolMode] = useState<'list' | 'create' | 'edit'>('list');
+
+  // Model config modal state
+  const [showModelConfig, setShowModelConfig] = useState(false);
+  const [modelConfigSessionId, setModelConfigSessionId] = useState<string | null>(null);
+  const [modelConfigInitial, setModelConfigInitial] = useState<Partial<ModelConfigForm>>({});
 
   // Form states
   const [sessionName, setSessionName] = useState('');
@@ -286,7 +292,7 @@ const AdminDashboard: React.FC = () => {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <RowActionMenu
+                    <RowActionBar
                       disabled={loading}
                       isExpanded={expandedSessionId === session.id}
                       onToggleExpand={async () => {
@@ -343,6 +349,17 @@ const AdminDashboard: React.FC = () => {
                         } catch {
                           setError('Failed to load tools');
                         }
+                      }}
+                      onConfigureModel={() => {
+                        setModelConfigSessionId(session.id);
+                        setModelConfigInitial({
+                          model_provider: (session.model_provider as any) || undefined,
+                          model_name: session.model_name || undefined,
+                          model_temperature: session.model_temperature ?? undefined,
+                          model_max_output_tokens: session.model_max_output_tokens ?? undefined,
+                          model_base_url: session.model_base_url || undefined,
+                        });
+                        setShowModelConfig(true);
                       }}
                       onDelete={() => handleDeleteSession(session.id)}
                     />
@@ -609,6 +626,26 @@ const AdminDashboard: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Model Config Modal */}
+      {showModelConfig && (
+        <ModelConfigModal
+          open={showModelConfig}
+          onClose={() => setShowModelConfig(false)}
+          initial={modelConfigInitial}
+          onSave={async (payload: ModelConfigForm) => {
+            if (!modelConfigSessionId) return;
+            try {
+              const updated = await api.admin.updateSession(modelConfigSessionId, payload);
+              setSessions(prev => prev.map(s => s.id === modelConfigSessionId ? { ...s, ...updated } : s));
+              setSuccess('Model configuration updated');
+            } catch (e: any) {
+              setError(e.response?.data?.detail || 'Failed to update model configuration');
+              throw e;
+            }
+          }}
+        />
       )}
 
       {/* MCP Tools Manager Modal */}

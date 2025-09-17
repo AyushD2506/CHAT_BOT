@@ -92,7 +92,10 @@ export const api = {
       return response.data;
     },
 
-    updateSession: async (sessionId: string, updates: Partial<ChatSessionCreate & { is_active?: boolean }>): Promise<ChatSession> => {
+    updateSession: async (
+      sessionId: string,
+      updates: Partial<ChatSessionCreate & { is_active?: boolean }> & import('../types').ModelConfigUpdate
+    ): Promise<ChatSession> => {
       const response = await apiClient.put(`/admin/sessions/${sessionId}`, updates);
       return response.data;
     },
@@ -269,7 +272,7 @@ export const api = {
     },
     updateSession: async (
       sessionId: string,
-      payload: Partial<Pick<ChatSession, 'session_name' | 'chunk_size' | 'chunk_overlap' | 'is_active' | 'enable_internet_search'>>
+      payload: Partial<Pick<ChatSession, 'session_name' | 'chunk_size' | 'chunk_overlap' | 'is_active' | 'enable_internet_search'>> & import('../types').ModelConfigUpdate
     ): Promise<ChatSession> => {
       const response = await apiClient.put(`/session-admin/sessions/${sessionId}`, payload);
       return response.data;

@@ -35,7 +35,23 @@ export interface ChatSession {
   chunk_size: number;
   chunk_overlap: number;
   enable_internet_search: boolean;
+  // Model configuration (non-sensitive fields only; api key is write-only)
+  model_provider?: 'ollama' | 'openai' | 'groq' | null;
+  model_name?: string | null;
+  model_temperature?: number | null;
+  model_max_output_tokens?: number | null;
+  model_base_url?: string | null; // for Ollama
   document_count?: number;
+}
+
+// Payload for creating/updating a session (admin or session-admin)
+export interface ModelConfigUpdate {
+  model_provider?: 'ollama' | 'openai' | 'groq';
+  model_name?: string;
+  model_temperature?: number;
+  model_max_output_tokens?: number;
+  model_base_url?: string; // Ollama
+  model_api_key?: string;  // write-only; used for OpenAI/Groq
 }
 
 export interface ChatThread {
