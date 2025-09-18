@@ -40,6 +40,17 @@ class ChatSession(Base):
     
     # Internet search configuration
     enable_internet_search = Column(Boolean, default=False)
+
+    # Model configuration (per session)
+    # provider: 'ollama' | 'openai' | 'groq'
+    model_provider = Column(String(20), default="groq")
+    model_name = Column(String(200), default="llama-3.3-70b-versatile")
+    model_temperature = Column(Float, default=0.1)
+    # Maximum output tokens for the response (provider-specific handling)
+    model_max_output_tokens = Column(Integer, nullable=True)
+    # Provider-specific connection details
+    model_api_key = Column(Text, nullable=True)       # used for openai/groq
+    model_base_url = Column(String(500), nullable=True)  # used for ollama base URL
     
     # Relationships
     user = relationship("User", back_populates="chat_sessions", foreign_keys=[user_id])

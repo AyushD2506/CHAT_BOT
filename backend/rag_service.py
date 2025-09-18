@@ -14,6 +14,15 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
+# Optional providers
+try:
+    from langchain_openai import ChatOpenAI  # type: ignore
+except Exception:
+    ChatOpenAI = None  # type: ignore
+try:
+    from langchain_community.chat_models import ChatOllama  # type: ignore
+except Exception:
+    ChatOllama = None  # type: ignore
 from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain.prompts import PromptTemplate
@@ -25,15 +34,8 @@ from search_service import search_service
 
 class RAGService:
     def __init__(self):
-        # Use the API key from environment variables
-        self.groq_api_key = os.getenv("GROQ_API_KEY")
-        if not self.groq_api_key:
-            raise ValueError("GROQ_API_KEY environment variable is required")
-        self.llm = ChatGroq(
-            groq_api_key=self.groq_api_key,
-            model_name="llama-3.3-70b-versatile",
-            temperature=0.1
-        )
+        # Lazy per-session LLM selection (provider/model per ChatSession)
+        # Note: We avoid a global self.llm to keep isolation and prevent race conditions
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
         )
@@ -42,6 +44,81 @@ class RAGService:
         # Store conversation memories per session
         self.session_memories = {}
         # Store documents per session
+        self.session_documents = {}
+        # Cache built LLMs per session (optional)
+        self.session_llms = {}
+        
+        # Create storage directories
+        self.storage_dir = Path("storage")
+        self.uploads_dir = self.storage_dir / "uploads"
+        self.vectorstores_dir = self.storage_dir / "vectorstores"
+        
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.vectorstores_dir.mkdir(parents=True, exist_ok=True)
+
+    async def _get_llm(self, session_id: str, db: AsyncSession):
+        """Build or fetch an LLM for the given session based on ChatSession config.
+        Returns (llm, identity_model_name, provider).
+        """
+        # Try cache
+        if session_id in self.session_llms:
+            return self.session_llms[session_id]
+
+        result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+        session = result.scalar_one_or_none()
+        if not session:
+            # Fallback to Groq defaults if session not found
+            llm = ChatGroq(model_name="llama-3.3-70b-versatile")
+            identity = "llama-3.3-70b-versatile"
+            provider = "groq"
+            self.session_llms[session_id] = (llm, identity, provider)
+            return llm, identity, provider
+
+        provider = (session.model_provider or "groq").lower()
+        model_name = session.model_name or "llama-3.3-70b-versatile"
+        temperature = session.model_temperature if session.model_temperature is not None else 0.1
+        max_tokens = session.model_max_output_tokens
+        api_key = session.model_api_key
+        base_url = session.model_base_url
+
+        llm = None
+        if provider == "groq":
+            # Use env as fallback
+            key = api_key or os.getenv("GROQ_API_KEY")
+            if not key:
+                raise ValueError("GROQ_API_KEY missing (session config or env)")
+            llm = ChatGroq(
+                groq_api_key=key,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        elif provider == "openai":
+            if ChatOpenAI is None:
+                raise RuntimeError("langchain-openai is not installed")
+            key = api_key or os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise ValueError("OPENAI_API_KEY missing (session config or env)")
+            llm = ChatOpenAI(
+                api_key=key,
+                model=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        elif provider == "ollama":
+            if ChatOllama is None:
+                raise RuntimeError("ChatOllama not available from langchain_community")
+            # base_url should point to local/remote ollama instance
+            kwargs = {"model": model_name, "temperature": temperature}
+            if base_url:
+                kwargs["base_url"] = base_url
+            llm = ChatOllama(**kwargs)
+        else:
+            raise ValueError(f"Unsupported model_provider: {provider}")
+
+        identity = model_name
+        self.session_llms[session_id] = (llm, identity, provider)
+        return llm, identity, provider
         self.session_documents = {}
         
         # Create storage directories
@@ -98,19 +175,23 @@ class RAGService:
                 print(f"Error loading vectorstore for session {session_id}: {e}")
         return None
     
-    async def get_conversation_memory(self, session_id: str, db: AsyncSession) -> ConversationBufferWindowMemory:
-        """Get or create conversation memory for a session"""
-        if session_id not in self.session_memories:
+    async def get_conversation_memory(self, session_id: str, user_id: str, db: AsyncSession) -> ConversationBufferWindowMemory:
+        """Get or create conversation memory for a session-user pair"""
+        key = (session_id, user_id)
+        if key not in self.session_memories:
             memory = ConversationBufferWindowMemory(
                 k=10,  # Keep last 10 exchanges
                 memory_key="chat_history",
                 return_messages=True
             )
             
-            # Load existing chat history from database
+            # Load existing chat history from database (isolate per-user)
             result = await db.execute(
                 select(ChatMessage)
-                .where(ChatMessage.session_id == session_id)
+                .where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.user_id == user_id
+                )
                 .order_by(ChatMessage.timestamp)
                 .limit(20)  # Last 20 messages
             )
@@ -118,16 +199,18 @@ class RAGService:
             
             # Add to memory
             for msg in messages:
+                if msg.user_id != user_id:
+                    continue
                 if msg.message_type == "user":
                     memory.chat_memory.add_user_message(msg.content)
                 else:
                     memory.chat_memory.add_ai_message(msg.content)
             
-            self.session_memories[session_id] = memory
+            self.session_memories[key] = memory
         
-        return self.session_memories[session_id]
+        return self.session_memories[key]
     
-    async def naive_rag(self, query: str, session_id: str, k: int = 5) -> str:
+    async def naive_rag(self, query: str, session_id: str, db: AsyncSession, k: int = 5) -> str:
         """Simple top-k retrieval"""
         vectorstore = self.session_vectorstores.get(session_id)
         if not vectorstore:
@@ -136,9 +219,12 @@ class RAGService:
         if not vectorstore:
             return "Please upload a PDF to this session first."
         
+        # Resolve per-session LLM
+        llm, _, _ = await self._get_llm(session_id, db)
+        
         retriever = vectorstore.as_retriever(search_kwargs={"k": k})
         qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
+            llm=llm,
             chain_type="stuff",
             retriever=retriever,
             return_source_documents=True
@@ -147,11 +233,14 @@ class RAGService:
         result = qa_chain({"query": query})
         return result["result"]
     
-    async def chunking_rag(self, query: str, session_id: str, chunk_size: int = 1000, chunk_overlap: int = 200, k: int = 5) -> str:
+    async def chunking_rag(self, query: str, session_id: str, db: AsyncSession, chunk_size: int = 1000, chunk_overlap: int = 200, k: int = 5) -> str:
         """Split documents into chunks and retrieve"""
         documents = self.session_documents.get(session_id, [])
         if not documents:
             return "Please upload a PDF to this session first."
+        
+        # Resolve per-session LLM
+        llm, _, _ = await self._get_llm(session_id, db)
         
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -164,7 +253,7 @@ class RAGService:
         retriever = vectorstore.as_retriever(search_kwargs={"k": k})
         
         qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
+            llm=llm,
             chain_type="stuff",
             retriever=retriever,
             return_source_documents=True
@@ -173,8 +262,8 @@ class RAGService:
         result = qa_chain({"query": query})
         return result["result"]
     
-    async def contextual_rag(self, query: str, session_id: str, db: AsyncSession, k: int = 5, expand_context: int = 1) -> str:
-        """Retrieve with neighboring chunks and conversation memory"""
+    async def contextual_rag(self, query: str, session_id: str, user_id: str, db: AsyncSession, k: int = 5, expand_context: int = 1) -> str:
+        """Retrieve with neighboring chunks and conversation memory (isolated per user)"""
         vectorstore = self.session_vectorstores.get(session_id)
         if not vectorstore:
             vectorstore = await self._load_vectorstore(session_id)
@@ -182,8 +271,11 @@ class RAGService:
         if not vectorstore:
             return "Please upload a PDF to this session first."
         
-        # Get conversation memory
-        memory = await self.get_conversation_memory(session_id, db)
+        # Resolve per-session LLM and identity
+        llm, identity, _ = await self._get_llm(session_id, db)
+        
+        # Get conversation memory per user
+        memory = await self.get_conversation_memory(session_id, user_id, db)
         
         # Get initial results
         docs = vectorstore.similarity_search(query, k=k)
@@ -198,6 +290,7 @@ class RAGService:
             history_text = "\n".join([f"{msg.type}: {msg.content}" for msg in chat_history[-6:]])
         
         prompt = f"""
+        [assistant={identity}]
         Conversation History:
         {history_text}
         
@@ -209,7 +302,7 @@ class RAGService:
         Based on the conversation history and document context, please provide a comprehensive answer:
         """
         
-        response = self.llm.invoke(prompt)
+        response = llm.invoke(prompt)
         
         # Update memory
         memory.chat_memory.add_user_message(query)
@@ -217,7 +310,7 @@ class RAGService:
         
         return response.content
     
-    async def multi_query_rag(self, query: str, session_id: str, k: int = 5) -> str:
+    async def multi_query_rag(self, query: str, session_id: str, db: AsyncSession, k: int = 5) -> str:
         """Generate multiple query variations for broader coverage"""
         vectorstore = self.session_vectorstores.get(session_id)
         if not vectorstore:
@@ -225,6 +318,9 @@ class RAGService:
         
         if not vectorstore:
             return "Please upload a PDF to this session first."
+        
+        # Resolve per-session LLM
+        llm, _, _ = await self._get_llm(session_id, db)
         
         # Generate query variations
         query_generation_prompt = f"""
@@ -235,7 +331,7 @@ class RAGService:
         Provide 3 alternative questions (one per line, no numbering):
         """
         
-        response = self.llm.invoke(query_generation_prompt)
+        response = llm.invoke(query_generation_prompt)
         alternative_queries = [q.strip() for q in response.content.split('\n') if q.strip()]
         
         # Add original query
@@ -267,7 +363,7 @@ class RAGService:
         please provide a detailed answer:
         """
         
-        response = self.llm.invoke(prompt)
+        response = llm.invoke(prompt)
         return response.content
     
     async def _maybe_execute_mcp_tool(self, query: str, session_id: str, db: AsyncSession) -> str | None:
@@ -584,56 +680,70 @@ Provide JSON only, no extra text.
             print(f"Error in internet search: {e}")
             return None
 
-    async def chat_with_memory(self, query: str, session_id: str, db: AsyncSession, strategy: str = "contextual", **kwargs) -> str:
-        """Main chat function with memory support + automatic MCP tool routing + internet search"""
+    async def chat_with_memory(self, query: str, session_id: str, user_id: str, db: AsyncSession, strategy: str = "contextual", **kwargs) -> str:
+        """Main chat function with memory support + automatic MCP tool routing + internet search (isolated per user)"""
         # 1) Explicit tool invocation (heuristics still respected)
         mcp_response = await self._maybe_execute_mcp_tool(query, session_id, db)
         if mcp_response is not None:
-            # Summarize tool output via LLM to produce a clean user-facing answer
+            # Summarize tool output via LLM to produce a clean user-facing answer, include model identity
             try:
+                llm, identity, _ = await self._get_llm(session_id, db)
                 prompt = f"""
+You are {identity}, acting as an MCP-compatible assistant.
 Summarize the following tool output to directly answer the user's question.
+Format the final message as:
+
+[assistant={identity}]
+<final_answer>
+
+If the tool output is an error, briefly explain and suggest next steps.
 
 User question:
 {query}
 
 Tool output:
 {mcp_response}
-
-Provide a concise, user-friendly answer. If the tool output is an error, explain it briefly and suggest next steps.
 """
-                _sum = self.llm.invoke(prompt)
-                return getattr(_sum, "content", str(_sum))
+                _sum = llm.invoke(prompt)
+                content = getattr(_sum, "content", str(_sum))
+                return f"[assistant={identity}]\n{content}"
             except Exception:
-                return mcp_response
+                return f"[assistant={identity}]\n{mcp_response}"
 
         # 2) Automatic tool routing
         auto_response = await self._auto_route_mcp_tool(query, session_id, db)
         if auto_response is not None:
-            # Summarize auto tool output via LLM
+            # Summarize auto tool output via LLM, include model identity
             try:
+                llm, identity, _ = await self._get_llm(session_id, db)
                 prompt = f"""
+You are {identity}, acting as an MCP-compatible assistant.
 Summarize the following tool output to directly answer the user's question.
+Format the final message as:
+
+[assistant={identity}]
+<final_answer>
+
+If the tool output is an error, briefly explain and suggest next steps.
 
 User question:
 {query}
 
 Tool output:
 {auto_response}
-
-Provide a concise, user-friendly answer. If the tool output is an error, explain it briefly and suggest next steps.
 """
-                _sum = self.llm.invoke(prompt)
-                return getattr(_sum, "content", str(_sum))
+                _sum = llm.invoke(prompt)
+                content = getattr(_sum, "content", str(_sum))
+                return f"[assistant={identity}]\n{content}"
             except Exception:
-                return auto_response
+                return f"[assistant={identity}]\n{auto_response}"
 
         # 3) Internet search (if enabled)
         internet_results = await self._get_internet_search_results(query, session_id, db)
         if internet_results:
             try:
                 # Combine internet search with RAG strategy
-                rag_response = await self._get_rag_response(query, session_id, db, strategy, **kwargs)
+                rag_response = await self._get_rag_response(query, session_id, user_id, db, strategy, **kwargs)
                 
                 # Combine both responses
                 combined_prompt = f"""
@@ -652,13 +762,16 @@ If there are conflicts between sources, mention them and provide the most recent
 If the internet search provides more current information, prioritize that while still referencing the document context where relevant.
 """
                 
-                response = self.llm.invoke(combined_prompt)
-                return response.content
+                llm, identity, _ = await self._get_llm(session_id, db)
+                response = llm.invoke(combined_prompt)
+                content = getattr(response, "content", str(response))
+                return f"[assistant={identity}]\n{content}"
                 
             except Exception as e:
                 print(f"Error combining internet search with RAG: {e}")
                 # Fall back to just internet search
                 try:
+                    llm, identity, _ = await self._get_llm(session_id, db)
                     internet_prompt = f"""
 Based on the following internet search results, answer the user's question.
 
@@ -669,31 +782,34 @@ Search Results:
 
 Provide a comprehensive answer based on the search results.
 """
-                    response = self.llm.invoke(internet_prompt)
-                    return response.content
+                    response = llm.invoke(internet_prompt)
+                    content = getattr(response, "content", str(response))
+                    return f"[assistant={identity}]\n{content}"
                 except Exception:
                     return internet_results
 
         # 4) Fall back to selected RAG strategy
-        return await self._get_rag_response(query, session_id, db, strategy, **kwargs)
+        final = await self._get_rag_response(query, session_id, user_id, db, strategy, **kwargs)
+        llm, identity, _ = await self._get_llm(session_id, db)
+        return f"[assistant={identity}]\n{final}"
 
-    async def _get_rag_response(self, query: str, session_id: str, db: AsyncSession, strategy: str, **kwargs) -> str:
-        """Get RAG response using the specified strategy"""
+    async def _get_rag_response(self, query: str, session_id: str, user_id: str, db: AsyncSession, strategy: str, **kwargs) -> str:
+        """Get RAG response using the specified strategy (isolated per user)"""
         if strategy == "naive":
-            return await self.naive_rag(query, session_id, k=kwargs.get('k', 5))
+            return await self.naive_rag(query, session_id, db, k=kwargs.get('k', 5))
         elif strategy == "chunking":
             return await self.chunking_rag(
-                query, session_id,
+                query, session_id, db,
                 chunk_size=kwargs.get('chunk_size', 1000),
                 chunk_overlap=kwargs.get('chunk_overlap', 200),
                 k=kwargs.get('k', 5)
             )
         elif strategy == "contextual":
-            return await self.contextual_rag(query, session_id, db, k=kwargs.get('k', 5))
+            return await self.contextual_rag(query, session_id, user_id, db, k=kwargs.get('k', 5))
         elif strategy == "multi_query":
-            return await self.multi_query_rag(query, session_id, k=kwargs.get('k', 5))
+            return await self.multi_query_rag(query, session_id, db, k=kwargs.get('k', 5))
         else:
-            return await self.contextual_rag(query, session_id, db, k=kwargs.get('k', 5))
+            return await self.contextual_rag(query, session_id, user_id, db, k=kwargs.get('k', 5))
     
     async def delete_session_data(self, session_id: str):
         """Delete all data for a session"""

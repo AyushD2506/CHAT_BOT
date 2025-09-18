@@ -35,6 +35,13 @@ class ChatSessionCreate(BaseModel):
     enable_internet_search: Optional[bool] = False
     # Optional assignment at creation time
     session_admin_id: Optional[str] = None
+    # Model configuration (optional at creation)
+    model_provider: Optional[str] = None  # 'ollama' | 'openai' | 'groq'
+    model_name: Optional[str] = None
+    model_temperature: Optional[float] = None
+    model_max_output_tokens: Optional[int] = None
+    model_base_url: Optional[str] = None
+    model_api_key: Optional[str] = None  # write-only
 
 class ChatSessionUpdate(BaseModel):
     session_name: Optional[str] = None
@@ -44,6 +51,13 @@ class ChatSessionUpdate(BaseModel):
     enable_internet_search: Optional[bool] = None
     # Allow changing session admin via admin routes only (ignored in session-admin routes)
     session_admin_id: Optional[str] = None
+    # Model configuration updates
+    model_provider: Optional[str] = None  # 'ollama' | 'openai' | 'groq'
+    model_name: Optional[str] = None
+    model_temperature: Optional[float] = None
+    model_max_output_tokens: Optional[int] = None
+    model_base_url: Optional[str] = None
+    model_api_key: Optional[str] = None  # write-only
 
 class ChatSessionResponse(BaseModel):
     id: str
@@ -56,6 +70,13 @@ class ChatSessionResponse(BaseModel):
     chunk_size: int
     chunk_overlap: int
     enable_internet_search: bool
+    # Model configuration (expose non-sensitive fields)
+    model_provider: Optional[str] = None
+    model_name: Optional[str] = None
+    model_temperature: Optional[float] = None
+    model_max_output_tokens: Optional[int] = None
+    model_base_url: Optional[str] = None  # OK to show base URL for ollama
+    # model_api_key is intentionally omitted from responses
     document_count: Optional[int] = 0
 
     model_config = ConfigDict(from_attributes=True)

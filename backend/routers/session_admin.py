@@ -98,6 +98,19 @@ async def update_session_config(
         session.is_active = payload.is_active
     if payload.enable_internet_search is not None:
         session.enable_internet_search = payload.enable_internet_search
+    # Model configuration updates (session admin allowed)
+    if payload.model_provider is not None:
+        session.model_provider = payload.model_provider
+    if payload.model_name is not None:
+        session.model_name = payload.model_name
+    if payload.model_temperature is not None:
+        session.model_temperature = payload.model_temperature
+    if payload.model_max_output_tokens is not None:
+        session.model_max_output_tokens = payload.model_max_output_tokens
+    if payload.model_base_url is not None:
+        session.model_base_url = payload.model_base_url
+    if payload.model_api_key is not None:
+        session.model_api_key = payload.model_api_key
 
     await db.commit()
     await db.refresh(session)

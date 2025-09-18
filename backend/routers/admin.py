@@ -29,6 +29,12 @@ async def create_session(
         chunk_size=session_data.chunk_size,
         chunk_overlap=session_data.chunk_overlap,
         enable_internet_search=session_data.enable_internet_search or False,
+        model_provider=(session_data.model_provider or "groq"),
+        model_name=(session_data.model_name or "llama-3.3-70b-versatile"),
+        model_temperature=(session_data.model_temperature if session_data.model_temperature is not None else 0.1),
+        model_max_output_tokens=session_data.model_max_output_tokens,
+        model_base_url=session_data.model_base_url,
+        model_api_key=session_data.model_api_key,
     )
     
     db.add(db_session)
@@ -122,6 +128,19 @@ async def update_session(
         session.is_active = session_update.is_active
     if session_update.enable_internet_search is not None:
         session.enable_internet_search = session_update.enable_internet_search
+    # Model configuration updates
+    if session_update.model_provider is not None:
+        session.model_provider = session_update.model_provider
+    if session_update.model_name is not None:
+        session.model_name = session_update.model_name
+    if session_update.model_temperature is not None:
+        session.model_temperature = session_update.model_temperature
+    if session_update.model_max_output_tokens is not None:
+        session.model_max_output_tokens = session_update.model_max_output_tokens
+    if session_update.model_base_url is not None:
+        session.model_base_url = session_update.model_base_url
+    if session_update.model_api_key is not None:
+        session.model_api_key = session_update.model_api_key
     # Allow global admin to change session_admin_id
     if session_update.session_admin_id is not None:
         # Validate user exists

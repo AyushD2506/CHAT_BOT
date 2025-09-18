@@ -79,15 +79,18 @@ async def get_chat_history(
             detail="Access denied to this session"
         )
     
-    # Get messages
+    # Get messages (isolate per-user)
     result = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
+        .where(
+            ChatMessage.session_id == session_id,
+            ChatMessage.user_id == current_user.id
+        )
         .order_by(ChatMessage.timestamp)
         .limit(50)  # Last 50 messages
     )
     messages = result.scalars().all()
-    
+
     return ChatHistoryResponse(messages=messages)
 
 # =========================
@@ -109,9 +112,12 @@ async def list_threads(
         raise HTTPException(status_code=403, detail="Access denied to this session")
 
     result = await db.execute(
-        select(ChatThread).where(ChatThread.session_id == session_id).order_by(ChatThread.updated_at.desc())
+        select(ChatThread)
+        .join(ChatMessage, ChatMessage.thread_id == ChatThread.id)
+        .where(ChatThread.session_id == session_id, ChatMessage.user_id == current_user.id)
+        .order_by(ChatThread.updated_at.desc())
     )
-    threads = result.scalars().all()
+    threads = result.scalars().unique().all()
     return [ChatThreadResponse.model_validate(t) for t in threads]
 
 @router.post("/sessions/{session_id}/threads", response_model=ChatThreadResponse)
@@ -157,7 +163,11 @@ async def get_thread_history(
 
     result = await db.execute(
         select(ChatMessage)
-        .where(ChatMessage.session_id == session_id, ChatMessage.thread_id == thread_id)
+        .where(
+            ChatMessage.session_id == session_id,
+            ChatMessage.thread_id == thread_id,
+            ChatMessage.user_id == current_user.id
+        )
         .order_by(ChatMessage.timestamp)
         .limit(200)
     )
@@ -251,14 +261,17 @@ User Question: {chat_request.message}
 Internet Search Results:
 {internet_results}
 """
-                    resp = rag_service.llm.invoke(combined_prompt)
-                    response_content = getattr(resp, 'content', str(resp))
+                    from ..rag_service import rag_service as _svc
+                    llm, identity, _ = await _svc._get_llm(chat_request.session_id, db)
+                    resp = llm.invoke(combined_prompt)
+                    response_content = getattr(resp, 'content', str(resp)) or ''
+                    response_content = f"[assistant={identity}]\n{response_content}"
                 except Exception:
                     response_content = internet_results  # already formatted text
             else:
                 # Fall back to standard RAG
                 response_content = await rag_service._get_rag_response(
-                    chat_request.message, chat_request.session_id, db, strategy,
+                    chat_request.message, chat_request.session_id, current_user.id, db, strategy,
                     k=k, chunk_size=chunk_size, chunk_overlap=chunk_overlap
                 )
         else:
@@ -266,6 +279,7 @@ Internet Search Results:
             response_content = await rag_service.chat_with_memory(
                 query=chat_request.message,
                 session_id=chat_request.session_id,
+                user_id=current_user.id,
                 db=db,
                 strategy=strategy,
                 k=k,
@@ -344,6 +358,7 @@ async def stream_message(
             response_content = await rag_service.chat_with_memory(
                 query=chat_request.message,
                 session_id=chat_request.session_id,
+                user_id=current_user.id,
                 db=db,
                 strategy=strategy,
                 k=k,
