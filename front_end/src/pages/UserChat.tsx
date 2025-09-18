@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import { ChatMessage, ChatSession, ChatRequest, RAGConfig, ChatThread } from '../types';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 
 const UserChat: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -306,7 +310,36 @@ const UserChat: React.FC = () => {
                           : 'bg-[#444654] text-gray-100 rounded-bl-md'
                       }`}
                     >
-                      <div className="whitespace-pre-wrap break-words text-sm leading-6">{m.content}</div>
+                      {m.message_type === 'assistant' ? (
+                        <div className="text-sm leading-6">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              code({ className, children, ...props }: { className?: string; children?: React.ReactNode }) {
+                                const match = /language-(\w+)/.exec(className || '');
+                                const codeText = String(children ?? '').replace(/\n$/, '');
+                                const isBlock = !!match || /\n/.test(codeText);
+                                if (isBlock) {
+                                  return (
+                                    <SyntaxHighlighter style={oneDark} language={match?.[1] || 'text'} PreTag="div">
+                                      {codeText}
+                                    </SyntaxHighlighter>
+                                  );
+                                }
+                                return (
+                                  <code className="bg-black/30 px-1.5 py-0.5 rounded" {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              },
+                            }}
+                          >
+                            {m.content}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <div className="whitespace-pre-wrap break-words text-sm leading-6">{m.content}</div>
+                      )}
                       {m.rag_strategy && m.message_type === 'assistant' && (
                         <div className="text-[10px] opacity-70 mt-1">RAG: {m.rag_strategy}</div>
                       )}
