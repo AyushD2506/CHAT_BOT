@@ -2,6 +2,7 @@ import React, { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../services/api';
+import ThemeToggle from './ThemeToggle';
 
 interface LayoutProps {
   children: ReactNode;
@@ -37,24 +38,24 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className={`${isAdmin ? 'min-h-screen bg-gray-50' : 'min-h-screen bg-[#343541]'}`}>
+    <div className={`${isAdmin ? 'min-h-screen bg-gray-50 dark:bg-gray-900' : 'min-h-screen bg-[#343541] dark:bg-gray-900'}`}>
       {/* Navigation Header */}
-      <nav className={`${isAdmin ? 'bg-white border-b border-gray-200' : 'bg-[#202123] border-b border-black/20'} sticky top-0 z-30`}>
+      <nav className={`${isAdmin ? 'bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700' : 'bg-[#202123] border-b border-black/20 dark:bg-gray-800 dark:border-gray-700'} sticky top-0 z-30`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-14">
             <div className="flex items-center">
-              <h1 className={`${isAdmin ? 'text-lg font-semibold text-gray-900' : 'text-lg font-semibold text-gray-100'}`}>
+              <h1 className={`${isAdmin ? 'text-lg font-semibold text-gray-900 dark:text-gray-100' : 'text-lg font-semibold text-gray-100'}`}>
                 RAG Chatbot {isAdmin ? '- Admin' : ''}
               </h1>
             </div>
             
             <div className="flex items-center space-x-4">
-              <span className={`${isAdmin ? 'text-sm text-gray-600' : 'text-sm text-gray-300'}`}>
+              <span className={`${isAdmin ? 'text-sm text-gray-600 dark:text-gray-300' : 'text-sm text-gray-300'}`}>
                 Welcome, {user?.username}
               </span>
               {/* Quick links */}
               {isAdmin && (
-                <a href={'/admin'} className={`text-sm text-blue-600 hover:text-blue-800`}>
+                <a href={'/admin'} className={`text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300`}>
                   Admin Dashboard
                 </a>
               )}
@@ -63,7 +64,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   Session Admin
                 </a>
               )}
-              <a href="/chat" className={`${isAdmin ? 'text-sm text-gray-600 hover:text-gray-800' : 'text-sm text-gray-300 hover:text-gray-100'}`}>Chat</a>
+              <a href="/chat" className={`${isAdmin ? 'text-sm text-gray-600 hover:text-gray-800 dark:text-gray-300 dark:hover:text-gray-100' : 'text-sm text-gray-300 hover:text-gray-100'}`}>Chat</a>
+
+              {/* Theme Toggle */}
+              <ThemeToggle />
+
               <button
                 onClick={handleLogout}
                 className={`${isAdmin
